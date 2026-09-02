@@ -15,10 +15,14 @@
 ********************************************************************************
 """
 
+import numpy as np
+from qrisp import QuantumVariable, QuantumCircuit
+from qrisp.circuit import U3Gate
+
 
 def prepare_sparse(
     qv: QuantumVariable,
-    target_array: NDArrayLike,
+    target_array,
     reversed: bool = False,
     method: str = "gleinig_hoefler",
 ):
@@ -30,7 +34,32 @@ def prepare_sparse(
 
 def _prepare_gleinig_hoefler(
     qv: QuantumVariable,
-    target_array: NDArrayLike,
+    target_array,
     reversed: bool = False,
 ):
+    
     pass
+
+def _gleinig_hoefler_subroutine(non_zero_indices: list[tuple], non_zero_values: list[complex]):
+    diff_qubits = []
+    diff_values = []
+    
+    T = non_zero_indices
+    
+def _normal_form(alpha: complex | float, beta: complex | float):
+    tot_phase = np.angle(alpha)
+    alpha *= np.exp(-1j*tot_phase)
+    beta *= np.exp(-1j*tot_phase)
+    
+    norm = np.sqrt(np.abs(alpha)**2 + np.abs(beta)**2)
+    
+    return alpha / norm, beta / norm
+
+def _rotate_state_to_0(qc: QuantumCircuit, target: int, control: list, alpha: complex | float, beta: complex | float):
+    alpha, beta = _normal_form(alpha, beta)
+        
+    theta = 2*np.acos(np.abs(alpha))
+    phi = np.angle(beta)    
+    
+    gate = U3Gate(-theta, 0, -phi).control(len(control))
+    qc.append(gate, qubits=[target]+control)
