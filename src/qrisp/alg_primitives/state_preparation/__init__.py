@@ -17,3 +17,4 @@
 """
 
 from qrisp.alg_primitives.state_preparation.prepare_func import *
+from qrisp.alg_primitives.state_preparation.prepare_sparse import *
