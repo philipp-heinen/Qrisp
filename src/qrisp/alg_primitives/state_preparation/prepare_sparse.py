@@ -1,5 +1,4 @@
 """********************************************************************************
-
 * Copyright (c) 2026 the Qrisp authors
 *
 * This program and the accompanying materials are made available under the
@@ -14,14 +13,13 @@
 *
 * SPDX-License-Identifier: EPL-2.0 OR GPL-2.0 WITH Classpath-exception-2.0
 ********************************************************************************
-
 """
 
 import numpy as np
 import scipy as sc
+import sympy
 
-from qrisp import QuantumCircuit, QuantumVariable
-from qrisp.circuit import U3Gate
+from qrisp import QuantumVariable, U3Gate, append_operation, check_for_tracing_mode, cx, gphase, invert, u3, x
 
 
 def prepare_sparse(
@@ -34,11 +32,12 @@ def prepare_sparse(
 
     A quantum state is sparse if only a small fraction of all coefficients of that state, in the standard qubit basis,
     are non-zero. In this case, the circuit depth needed for the preparation of the state does not depend exponentially
-    on the number of qubits any more, as for a generic state preparation algorithm, but only polynomially,
-    while it also scales polynomially with the number S of non-zero coefficients.
+    on the number of qubits any more, as for a generic state preparation algorithm, but only polynomially, while it also
+    scales polynomially with the number S of non-zero coefficients.
 
     There are a number of sparse state preparation algorithms, optimizing different target quantities.
-    For now, the function implements only the algorithm due to Gleinig and Hoefler (https://ieeexplore.ieee.org/abstract/document/9586240).
+    For now, the function implements only the algorithm due to Gleinig and Hoefler
+    (https://ieeexplore.ieee.org/abstract/document/9586240).
     It produces a circuit with O(S*n) CNOT gates and O(S*log(S)+n) single-qubit gates.
     The classical algorithm needed to find the circuit has a runtime of O(S^2*log(S)*n).
 
@@ -49,8 +48,8 @@ def prepare_sparse(
     target_state: scipy.sparse.coo_array or dict
         The sparse quantum state to prepare. It can either be provided as a sparse array of type scipy.sparse.coo_array
         or as a dictionary that contains the coefficient for every binary string.
-        The binary strings (i.e. the dictionary keys) can be provided as str (e.g. ``'0111'``)
-        or tuples (e.g. ``(0, 1, 1, 1)'``.
+        The binary strings (i.e. the dictionary keys) can be
+        provided as str (e.g. ``'0111'``) or tuples (e.g. ``(0, 1, 1, 1)'``.
     reverse: bool
         Whether the standard little-endian convention should be reversed to a big-endian convention.
         This has only effect if ``target_state`` is provided as a sparse array instead of a dictionary.
@@ -60,10 +59,11 @@ def prepare_sparse(
 
     """
     if isinstance(target_state, sc.sparse.coo_array):
-        if 2 ** len(qv) != target_state.shape[0]:
-            raise ValueError(
-                f"If target_state is array, it must have length 2**len(qv) but has length {target_state.shape[0]}"
-            )
+        if not check_for_tracing_mode():
+            if 2 ** len(qv) != target_state.shape[0]:
+                raise ValueError(
+                    f"If target_state is array, it must have length 2**len(qv) but has length {target_state.shape[0]}"
+                )
 
         # convert the sparse vector to a dictionary with the coefficients
         indices = target_state.coords[0]
@@ -74,31 +74,23 @@ def prepare_sparse(
             coeffs[_int_to_binary_tuple(ind, len(qv), reverse)] = complex(values[i])
 
     elif isinstance(target_state, dict):
+        if not isinstance(list(target_state.keys())[0], (tuple, str)):
+            raise ValueError(
+                f"If target_state is a dictionary, its keys must be either tuples or strings, but are of type {type(list(target_state.keys())[0])}"
+            )
+
+        if not check_for_tracing_mode():
+            if len(list(target_state.keys())[0]) != len(qv):
+                raise ValueError(
+                    f"If target_state is a dictionary with tuples or strings as keys, they must have size len(qv) but have size {len(list(target_state.keys())[0])}"
+                )
+
         if isinstance(list(target_state.keys())[0], tuple):
-            if len(list(target_state.keys())[0]) != len(qv):
-                raise ValueError(
-                    f"If target_state is a dictionary with tuples as keys, they must have size len(qv)\
-                    but have size {len(list(target_state.keys())[0])}"
-                )
-
             coeffs = target_state
-
-        elif isinstance(list(target_state.keys())[0], str):
-            if len(list(target_state.keys())[0]) != len(qv):
-                raise ValueError(
-                    f"If target_state is a dictionary with strings as keys, they must have size len(qv)\
-                    but have size {len(list(target_state.keys())[0])}"
-                )
-
+        else:
             coeffs = {
                 tuple(map(int, k)): v for k, v in target_state.items()
             }  # convert strings to tuples for later convenience
-
-        else:
-            raise ValueError(
-                f"If target_state is a dictionary, its keys must be either tuples or strings,\
-                but are of type {type(list(target_state.keys())[0])}"
-            )
 
     else:
         raise ValueError(
@@ -115,31 +107,27 @@ def _prepare_gleinig_hoefler(qv: QuantumVariable, coeffs: dict):
     r"""Prepare a sparse quantum state according to the Gleinig-Hoefler algorithm.
 
     It computes a circuit that iteratively reduces the number of non-zero entries in the target state
-    (by calling _gleinig_hoefler_subroutine) until only one single state remains,
-    which is trivial to transform into |000...>.
+    (by calling _gleinig_hoefler_subroutine) until only one single state remains, which is trivial to
+    transform into |000...>.
     By reversing the resulting circuit, the target state can be prepared from |000...>.
 
     """
-    n = len(qv)
-
     S = list(coeffs.keys())
 
-    qc = QuantumCircuit(n)
+    n = len(S[0])
 
-    while len(S) > 1:
-        S, coeffs = _gleinig_hoefler_subroutine(qc, S, coeffs, n)
+    with invert():
+        while len(S) > 1:
+            S, coeffs = _gleinig_hoefler_subroutine(qv, S, coeffs, n)
+        for i, b in enumerate(S[0]):
+            if b:
+                x(qv[i])
 
-    for i, b in enumerate(S[0]):
-        if b:
-            qc.x(i)
-
-    qc.gphase(-np.angle(list(coeffs.values())[0]), 0)
-
-    qv.append(qc.inverse().to_op())
+        gphase(-np.angle(list(coeffs.values())[0]), qv[0])
 
 
-def _gleinig_hoefler_subroutine(qc: QuantumCircuit, S: list[tuple], coeffs: dict, n: int):
-    r"""Subroutine of the Gleinig-Hoefler algorithm."""
+def _gleinig_hoefler_subroutine(qv: QuantumVariable, S: list[tuple], coeffs: dict, n: int):
+    r"""Subroutine of the Gleinig-Hoefler algorithm, which reduces the number of non-zero entries in the state."""
     diff_qubits = []
     diff_values = []
 
@@ -177,39 +165,41 @@ def _gleinig_hoefler_subroutine(qc: QuantumCircuit, S: list[tuple], coeffs: dict
     U = reduction_loop(U)
     x2 = U[0]
 
-    coeffs_new = coeffs.copy()
-    x1_new = list(x1)
-    x2_new = list(x2)
+
+    alpha, beta = coeffs[x1], coeffs[x2]
+
+    x1 = list(x1)
+    x2 = list(x2)
 
     if x1[diff] != 1:
-        qc.x(diff)
+        x(qv[diff])
 
-        coeffs_new = {(*s[:diff], s[diff] ^ 1, *s[diff + 1 :]): coeff for s, coeff in coeffs_new.items()}
-        x1_new[diff] = x1_new[diff] ^ 1
-        x2_new[diff] = x2_new[diff] ^ 1
+        coeffs = {(*s[:diff], s[diff] ^ 1, *s[diff + 1 :]): coeff for s, coeff in coeffs.items()}
+        x1[diff] = x1[diff] ^ 1
+        x2[diff] = x2[diff] ^ 1
 
     for i in list(range(n)):
         if i != diff and x1[i] != x2[i]:
-            qc.cx(diff, i)
+            cx(qv[diff], qv[i])
 
-            coeffs_new = {(*s[:i], s[i] ^ s[diff], *s[i + 1 :]): coeff for s, coeff in coeffs_new.items()}
-            x1_new[i] = x1_new[i] ^ x1_new[diff]
-            x2_new[i] = x2_new[i] ^ x2_new[diff]
+            coeffs = {(*s[:i], s[i] ^ s[diff], *s[i + 1 :]): coeff for s, coeff in coeffs.items()}
+            x1[i] = x1[i] ^ x1[diff]
+            x2[i] = x2[i] ^ x2[diff]
 
     for i in diff_qubits:
         if x2[i] != 1:
-            qc.x(i)
+            x(qv[i])
 
-            coeffs_new = {(*s[:i], s[i] ^ 1, *s[i + 1 :]): coeff for s, coeff in coeffs_new.items()}
-            x1_new[i] = x1_new[i] ^ 1
-            x2_new[i] = x2_new[i] ^ 1
+            coeffs = {(*s[:i], s[i] ^ 1, *s[i + 1 :]): coeff for s, coeff in coeffs.items()}
+            x1[i] = x1[i] ^ 1
+            x2[i] = x2[i] ^ 1
 
-    newvalue = _rotate_state_to_0(qc, diff, diff_qubits, coeffs[x2], coeffs[x1])
+    newvalue = _rotate_state_to_0(qv, diff, diff_qubits, beta, alpha)
 
-    coeffs_new.pop(tuple(x1_new))
-    coeffs_new[tuple(x2_new)] = newvalue
+    coeffs.pop(tuple(x1))
+    coeffs[tuple(x2)] = newvalue
 
-    return list(coeffs_new.keys()), coeffs_new
+    return list(coeffs.keys()), coeffs
 
 
 def _int_to_binary_tuple(n: int, width: int, reverse: bool):
@@ -236,18 +226,27 @@ def _normal_form(alpha: complex | float, beta: complex | float):
     return alpha / norm, beta / norm, tot_phase, norm
 
 
-def _rotate_state_to_0(qc: QuantumCircuit, target: int, control: list, alpha: complex | float, beta: complex | float):
-    r"""Rotate a state alpha|0> + beta|1> in qubit target to the state |0>, controlled by the qubits in control."""
+def _cu3(theta, phi, lam, qubits):
+    if check_for_tracing_mode():
+        append_operation(
+            U3Gate(sympy.Symbol("alpha"), sympy.Symbol("beta"), sympy.Symbol("gamma")).control(len(qubits) - 1),
+            qubits,
+            param_tracers=[theta, phi, lam],
+        )
+    else:
+        append_operation(U3Gate(theta, phi, lam).control(len(qubits) - 1), qubits)
+
+
+def _rotate_state_to_0(qv: QuantumVariable, target: int, control: list, alpha: complex | float, beta: complex | float):
+    r"""Rotate a state alpha |0> + beta |1> in qubit ``target`` to the state |0>, controlled by the qubits in ``control``."""
     _alpha, _beta, tot_phase, norm = _normal_form(alpha, beta)
 
     theta = 2 * np.acos(np.abs(_alpha))
     phi = np.angle(_beta)
 
     if len(control) > 0:
-        gate = U3Gate(-theta, 0, -phi).control(len(control))
+        _cu3(-theta, 0, -phi, [qv[i] for i in control] + [qv[target]])
     else:
-        gate = U3Gate(-theta, 0, -phi)
-
-    qc.append(gate, qubits=control + [target])
+        u3(-theta, 0, -phi, qv[target])
 
     return np.exp(1j * tot_phase) * norm
